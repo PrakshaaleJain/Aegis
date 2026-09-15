@@ -26,9 +26,18 @@ def main():
     print("Executing Step 2: Client-Level Aggregations...")
     
     # 2a. Group by UID: mean and std of TransactionAmt
-    uid_amt_stats = df.groupby('UID')['TransactionAmt'].agg(['mean', 'std']).reset_index()
-    uid_amt_stats.columns = ['UID', 'UID_TransactionAmt_mean', 'UID_TransactionAmt_std']
-    df = df.merge(uid_amt_stats, on='UID', how='left')
+    # uid_amt_stats = df.groupby('UID')['TransactionAmt'].agg(['mean', 'std']).reset_index()
+    # uid_amt_stats.columns = ['UID', 'UID_TransactionAmt_mean', 'UID_TransactionAmt_std']
+    # df = df.merge(uid_amt_stats, on='UID', how='left')
+
+    roll_7d = df.groupby('UID')['TransactionAmt'].rolling('7D').mean().reset_index(drop=True, level=0)
+    roll_30d = df.groupby('UID')['TransactionAmt'].rolling('30D').mean().reset_index(drop=True, level=0)
+    roll_7d_ewm = roll_7d.ewm(span=5, adjust=False).mean()
+    roll_30d_ewm = roll_30d.ewm(span=5, adjust=False).mean()
+
+    df['UID_TransactionAmt_roll_7d_ewm'] = roll_7d_ewm
+    df['UID_TransactionAmt_roll_30d_ewm'] = roll_30d_ewm
+    
     
     # 2b. Time-delta since UID's last transaction
     df = df.sort_values(['UID', 'TransactionDT'])
