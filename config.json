@@ -19,6 +19,7 @@
     },
     "post_processing": {
         "prediction_threshold": 0.5,
-        "infected_card_threshold": 0.90
+        "infected_card_threshold": 0.90,
+        "infected_card_expiry_days": 14
     }
 }
