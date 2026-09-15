@@ -1,11 +1,15 @@
 import pandas as pd
 import numpy as np
+import json
 from lightgbm import LGBMClassifier
 from sklearn.metrics import classification_report
 
 
 def main():
-    df = pd.read_csv("data/train_transaction.csv")
+    with open('config.json', 'r') as f:
+        config = json.load(f)
+        
+    df = pd.read_csv(config['data']['train_path'])
     df['TransactionDay'] = df['TransactionDT'] // (24 * 60 * 60)
     df['Dn'] = df['TransactionDay'] - df['D1']
     df['UID'] = df['card1'].astype(str) + '_' + \
@@ -22,12 +26,24 @@ def main():
     print("Executing Step 2: Client-Level Aggregations...")
     
     # 2a. Group by UID: mean and std of TransactionAmt
-    uid_amt_stats = df.groupby('UID')['TransactionAmt'].agg(['mean', 'std']).reset_index()
-    uid_amt_stats.columns = ['UID', 'UID_TransactionAmt_mean', 'UID_TransactionAmt_std']
-    df = df.merge(uid_amt_stats, on='UID', how='left')
+    # uid_amt_stats = df.groupby('UID')['TransactionAmt'].agg(['mean', 'std']).reset_index()
+    # uid_amt_stats.columns = ['UID', 'UID_TransactionAmt_mean', 'UID_TransactionAmt_std']
+    # df = df.merge(uid_amt_stats, on='UID', how='left')
+
+    # We must sort by time and set a TimedeltaIndex for pandas rolling('7D') to work
+    df = df.sort_values(['UID', 'TransactionDT'])
+    df.index = pd.to_timedelta(df['TransactionDT'], unit='s')
+    
+    roll_7d = df.groupby('UID')['TransactionAmt'].rolling('7D').mean().reset_index(drop=True, level=0)
+    roll_30d = df.groupby('UID')['TransactionAmt'].rolling('30D').mean().reset_index(drop=True, level=0)
+    roll_7d_ewm = roll_7d.ewm(**config['ewm']).mean()
+    roll_30d_ewm = roll_30d.ewm(**config['ewm']).mean()
+
+    df['UID_TransactionAmt_roll_7d_ewm'] = roll_7d_ewm
+    df['UID_TransactionAmt_roll_30d_ewm'] = roll_30d_ewm
+    
     
     # 2b. Time-delta since UID's last transaction
-    df = df.sort_values(['UID', 'TransactionDT'])
     df['UID_TimeSinceLastTrans'] = df.groupby('UID')['TransactionDT'].diff()
     df['UID_TimeSinceLastTrans'] = df['UID_TimeSinceLastTrans'].fillna(0)
     
@@ -42,7 +58,7 @@ def main():
         
     print("Client-Level Aggregations completed.")
     print("Sample of new features:")
-    print(df[['UID', 'TransactionAmt', 'UID_TransactionAmt_mean', 'UID_TransactionAmt_std', 'UID_TimeSinceLastTrans', 'P_emaildomain_freq']].head())
+    print(df[['UID', 'TransactionAmt', 'UID_TransactionAmt_roll_7d_ewm', 'UID_TransactionAmt_roll_30d_ewm', 'UID_TimeSinceLastTrans', 'P_emaildomain_freq']].head())
 
  
     for col in df.select_dtypes(include=['object']).columns:
@@ -57,8 +73,8 @@ def main():
     # Gap: Days 121-150 (Month 5) -> We skip these
     # Test: Days > 150 (Month 6)
     
-    train_idx = df[df['TransactionDay'] <= 120].index
-    test_idx = df[df['TransactionDay'] > 150].index
+    train_idx = df[df['TransactionDay'] <= config['validation']['train_max_day']].index
+    test_idx = df[df['TransactionDay'] > config['validation']['test_min_day']].index
 
     X_train, y_train = X.loc[train_idx], y.loc[train_idx]
     X_test, y_test = X.loc[test_idx], y.loc[test_idx]
@@ -67,11 +83,11 @@ def main():
 
 
     print("Executing Step 4: Model Training (LightGBM)...")
-    model = LGBMClassifier(n_estimators=100, learning_rate=0.05, max_depth=7, random_state=42)
+    model = LGBMClassifier(**config['model_params'])
     model.fit(X_train, y_train)
 
     y_pred_proba = model.predict_proba(X_test)[:, 1]
-    y_pred = (y_pred_proba >= 0.5).astype(int)
+    y_pred = (y_pred_proba >= config['post_processing']['prediction_threshold']).astype(int)
     print("Executing Post-Processing: Infected Card Rule...")
     test_df = df.loc[test_idx].copy()
     test_df['fraud_prob'] = y_pred_proba
@@ -85,15 +101,15 @@ def main():
         
         # Don't infect missing/invalid UIDs
         if pd.isna(uid) or 'nan' in str(uid):
-            final_preds.append(1 if prob >= 0.5 else 0)
+            final_preds.append(1 if prob >= config['post_processing']['prediction_threshold'] else 0)
             continue
             
         if uid in infected_uids:
             final_preds.append(1)
         else:
-            if prob > 0.90:
+            if prob > config['post_processing']['infected_card_threshold']:
                 infected_uids.add(uid)
-            final_preds.append(1 if prob >= 0.5 else 0)
+            final_preds.append(1 if prob >= config['post_processing']['prediction_threshold'] else 0)
             
     y_pred_post = final_preds
 
