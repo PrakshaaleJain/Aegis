@@ -102,8 +102,6 @@ def main():
     
     print("--- After Post-Processing ---")
     print(classification_report(y_test, y_pred_post))
-    
-    import numpy as np
     num_overrides = np.sum(np.array(y_pred_post) != np.array(y_pred))
     print(f"Number of 'Infected' overriding predictions: {num_overrides}")
 
