@@ -67,7 +67,7 @@ def main():
 
 
     print("Executing Step 4: Model Training (LightGBM)...")
-    model = LGBMClassifier(n_estimators=100, learning_rate=0.05, max_depth=7, random_state=42)
+    model = LGBMClassifier(n_estimators=100, learning_rate=0.05, max_depth=7, random_state=42, is_unbalance=True)
     model.fit(X_train, y_train)
 
     y_pred_proba = model.predict_proba(X_test)[:, 1]
