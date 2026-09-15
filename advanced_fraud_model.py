@@ -48,7 +48,7 @@ def main():
     df['UID_TimeSinceLastTrans'] = df['UID_TimeSinceLastTrans'].fillna(0)
     
     # Restore strictly chronological order for time-gap validation in Step 3
-    df = df.sort_values('TransactionDT').reset_index(drop=True)
+    df = df.reset_index(drop=True).sort_values('TransactionDT').reset_index(drop=True)
 
     # 2c. Frequency Encoding for categoricals
     cat_cols = ['P_emaildomain', 'R_emaildomain', 'ProductCD', 'card4', 'card6']
@@ -92,24 +92,29 @@ def main():
     test_df = df.loc[test_idx].copy()
     test_df['fraud_prob'] = y_pred_proba
     
-    infected_uids = set()
+    infected_uids = {}
     final_preds = []
     
     for idx, row in test_df.iterrows():
         uid = row['UID']
         prob = row['fraud_prob']
-        
-        # Don't infect missing/invalid UIDs
+        txn_day = row['TransactionDay']
+        expiry_day = config['post_processing']['infected_card_expiry_days']
         if pd.isna(uid) or 'nan' in str(uid):
             final_preds.append(1 if prob >= config['post_processing']['prediction_threshold'] else 0)
             continue
-            
+
         if uid in infected_uids:
-            final_preds.append(1)
-        else:
-            if prob > config['post_processing']['infected_card_threshold']:
-                infected_uids.add(uid)
-            final_preds.append(1 if prob >= config['post_processing']['prediction_threshold'] else 0)
+            if txn_day - infected_uids[uid] <= expiry_day:
+                final_preds.append(1)
+                infected_uids[uid] = txn_day
+                continue
+            else:
+                del infected_uids[uid]
+                
+        if prob > config['post_processing']['infected_card_threshold']:
+            infected_uids[uid] = txn_day
+        final_preds.append(1 if prob >= config['post_processing']['prediction_threshold'] else 0)
             
     y_pred_post = final_preds
 
