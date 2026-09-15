@@ -1,0 +1,20 @@
+{
+    "data": {
+        "train_path": "data/train_transaction.csv"
+    },
+    "validation": {
+        "train_max_day": 120,
+        "test_min_day": 150
+    },
+    "model_params": {
+        "n_estimators": 100,
+        "learning_rate": 0.05,
+        "max_depth": 7,
+        "random_state": 42,
+        "is_unbalance": true
+    },
+    "post_processing": {
+        "prediction_threshold": 0.5,
+        "infected_card_threshold": 0.90
+    }
+}
