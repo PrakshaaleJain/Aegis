@@ -30,17 +30,20 @@ def main():
     # uid_amt_stats.columns = ['UID', 'UID_TransactionAmt_mean', 'UID_TransactionAmt_std']
     # df = df.merge(uid_amt_stats, on='UID', how='left')
 
+    # We must sort by time and set a TimedeltaIndex for pandas rolling('7D') to work
+    df = df.sort_values(['UID', 'TransactionDT'])
+    df.index = pd.to_timedelta(df['TransactionDT'], unit='s')
+    
     roll_7d = df.groupby('UID')['TransactionAmt'].rolling('7D').mean().reset_index(drop=True, level=0)
     roll_30d = df.groupby('UID')['TransactionAmt'].rolling('30D').mean().reset_index(drop=True, level=0)
-    roll_7d_ewm = roll_7d.ewm(span=5, adjust=False).mean()
-    roll_30d_ewm = roll_30d.ewm(span=5, adjust=False).mean()
+    roll_7d_ewm = roll_7d.ewm(**config['ewm']).mean()
+    roll_30d_ewm = roll_30d.ewm(**config['ewm']).mean()
 
     df['UID_TransactionAmt_roll_7d_ewm'] = roll_7d_ewm
     df['UID_TransactionAmt_roll_30d_ewm'] = roll_30d_ewm
     
     
     # 2b. Time-delta since UID's last transaction
-    df = df.sort_values(['UID', 'TransactionDT'])
     df['UID_TimeSinceLastTrans'] = df.groupby('UID')['TransactionDT'].diff()
     df['UID_TimeSinceLastTrans'] = df['UID_TimeSinceLastTrans'].fillna(0)
     
@@ -55,7 +58,7 @@ def main():
         
     print("Client-Level Aggregations completed.")
     print("Sample of new features:")
-    print(df[['UID', 'TransactionAmt', 'UID_TransactionAmt_mean', 'UID_TransactionAmt_std', 'UID_TimeSinceLastTrans', 'P_emaildomain_freq']].head())
+    print(df[['UID', 'TransactionAmt', 'UID_TransactionAmt_roll_7d_ewm', 'UID_TransactionAmt_roll_30d_ewm', 'UID_TimeSinceLastTrans', 'P_emaildomain_freq']].head())
 
  
     for col in df.select_dtypes(include=['object']).columns:

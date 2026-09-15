@@ -2,6 +2,10 @@
     "data": {
         "train_path": "data/train_transaction.csv"
     },
+    "ewm": {
+        "span": 5,
+        "adjust": false
+    },
     "validation": {
         "train_max_day": 120,
         "test_min_day": 150
