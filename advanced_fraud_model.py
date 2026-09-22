@@ -2,7 +2,8 @@ import pandas as pd
 import numpy as np
 import json
 from lightgbm import LGBMClassifier
-from sklearn.metrics import classification_report
+from sklearn.metrics import classification_report, precision_recall_curve
+from sklearn.feature_selection import VarianceThreshold
 
 
 def main():
@@ -12,12 +13,10 @@ def main():
     df = pd.read_csv(config['data']['train_path'])
     df['TransactionDay'] = df['TransactionDT'] // (24 * 60 * 60)
     df['Dn'] = df['TransactionDay'] - df['D1']
-    df['UID'] = df['card1'].astype(str) + '_' + \
-                df['card2'].astype(str) + '_' + \
-                df['card4'].astype(str) + '_' + \
-                df['card6'].astype(str) + '_' + \
-                df['addr1'].astype(str) + '_' + \
-                df['Dn'].astype(str)
+    for c in ['card1', 'card2', 'card4', 'card6', 'addr1', 'Dn']:
+        df[c] = df[c].astype(str).replace('nan', 'NaN_val').fillna('NaN_val')
+        
+    df['UID'] = df['card1'] + '_' + df['card2'] + '_' + df['card4'] + '_' + df['card6'] + '_' + df['addr1'] + '_' + df['Dn']
                 
     print(f"Engineered UID column successfully. Unique UIDs found: {df['UID'].nunique()}")
     print("Sample of generated UIDs:")
@@ -39,8 +38,8 @@ def main():
     roll_7d_ewm = roll_7d.ewm(**config['ewm']).mean()
     roll_30d_ewm = roll_30d.ewm(**config['ewm']).mean()
 
-    df['UID_TransactionAmt_roll_7d_ewm'] = roll_7d_ewm
-    df['UID_TransactionAmt_roll_30d_ewm'] = roll_30d_ewm
+    df['UID_TransactionAmt_roll_7d_ewm'] = roll_7d_ewm.values
+    df['UID_TransactionAmt_roll_30d_ewm'] = roll_30d_ewm.values
     
     
     # 2b. Time-delta since UID's last transaction
@@ -81,13 +80,73 @@ def main():
 
     print(f"Train size: {len(X_train)}, Test size: {len(X_test)}")
 
+    # --- Feature Selection Pipeline ---
+    print("Executing Feature Selection Pipeline...")
+    v_cols = [c for c in X_train.columns if c.startswith('V')]
+    print(f"Initial V-columns: {len(v_cols)}")
+    
+    fs_config = config.get('feature_selection', {})
+    null_thresh = fs_config.get('null_threshold', 0.5)
+    var_thresh = fs_config.get('variance_threshold', 0.01)
+    corr_thresh = fs_config.get('corr_threshold', 0.95)
+    top_k = fs_config.get('top_k_features', 100)
+    
+    # Stage A: Drop high nullity V-columns
+    null_pct = X_train[v_cols].isnull().mean()
+    cols_to_drop_null = null_pct[null_pct > null_thresh].index.tolist()
+    X_train = X_train.drop(columns=cols_to_drop_null)
+    X_test = X_test.drop(columns=cols_to_drop_null)
+    v_cols = [c for c in v_cols if c not in cols_to_drop_null]
+    print(f"Stage A: Dropped {len(cols_to_drop_null)} V-columns with >{null_thresh*100}% nulls. Remaining: {len(v_cols)}")
+
+    # Stage B: Drop near-zero variance V-columns
+    vt = VarianceThreshold(threshold=var_thresh)
+    vt.fit(X_train[v_cols].fillna(-999))
+    cols_to_keep_var = np.array(v_cols)[vt.get_support()]
+    cols_to_drop_var = set(v_cols) - set(cols_to_keep_var)
+    X_train = X_train.drop(columns=list(cols_to_drop_var))
+    X_test = X_test.drop(columns=list(cols_to_drop_var))
+    v_cols = list(cols_to_keep_var)
+    print(f"Stage B: Dropped {len(cols_to_drop_var)} V-columns with <{var_thresh} variance. Remaining: {len(v_cols)}")
+
+    # Stage C: Correlation-based deduplication
+    corr_matrix = X_train[v_cols].corr().abs()
+    upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
+    cols_to_drop_corr = [column for column in upper.columns if any(upper[column] > corr_thresh)]
+    X_train = X_train.drop(columns=cols_to_drop_corr)
+    X_test = X_test.drop(columns=cols_to_drop_corr)
+    v_cols = [c for c in v_cols if c not in cols_to_drop_corr]
+    print(f"Stage C: Dropped {len(cols_to_drop_corr)} V-columns with >{corr_thresh} correlation. Remaining: {len(v_cols)}")
+    
+    # Stage D: LightGBM Importance Selection
+    print("Stage D: Training quick LightGBM for feature importance...")
+    temp_model = LGBMClassifier(n_estimators=50, random_state=42, n_jobs=-1, verbose=-1)
+    temp_model.fit(X_train, y_train)
+    importances = temp_model.feature_importances_
+    
+    feat_imp = pd.Series(importances, index=X_train.columns).sort_values(ascending=False)
+    selected_features = feat_imp.head(top_k).index.tolist()
+    dropped_by_importance = set(X_train.columns) - set(selected_features)
+    X_train = X_train[selected_features]
+    X_test = X_test[selected_features]
+    print(f"Stage D: Kept top {len(selected_features)} features globally based on importance. Dropped {len(dropped_by_importance)} features.")
+    print(f"Final feature count for training: {X_train.shape[1]}")
 
     print("Executing Step 4: Model Training (LightGBM)...")
     model = LGBMClassifier(**config['model_params'])
     model.fit(X_train, y_train)
 
     y_pred_proba = model.predict_proba(X_test)[:, 1]
-    y_pred = (y_pred_proba >= config['post_processing']['prediction_threshold']).astype(int)
+    
+    print("Finding optimal threshold using Precision-Recall curve on training data...")
+    y_train_proba = model.predict_proba(X_train)[:, 1]
+    precisions, recalls, thresholds = precision_recall_curve(y_train, y_train_proba)
+    f1_scores = 2 * (precisions * recalls) / (precisions + recalls + 1e-9)
+    optimal_idx = np.argmax(f1_scores)
+    optimal_threshold = thresholds[optimal_idx] if optimal_idx < len(thresholds) else config['post_processing']['prediction_threshold']
+    print(f"Optimal threshold found (max F1 on train): {optimal_threshold:.4f}")
+    
+    y_pred = (y_pred_proba >= optimal_threshold).astype(int)
     print("Executing Post-Processing: Infected Card Rule...")
     test_df = df.loc[test_idx].copy()
     test_df['fraud_prob'] = y_pred_proba
@@ -101,7 +160,7 @@ def main():
         txn_day = row['TransactionDay']
         expiry_day = config['post_processing']['infected_card_expiry_days']
         if pd.isna(uid) or 'nan' in str(uid):
-            final_preds.append(1 if prob >= config['post_processing']['prediction_threshold'] else 0)
+            final_preds.append(1 if prob >= optimal_threshold else 0)
             continue
 
         if uid in infected_uids:
@@ -114,7 +173,7 @@ def main():
                 
         if prob > config['post_processing']['infected_card_threshold']:
             infected_uids[uid] = txn_day
-        final_preds.append(1 if prob >= config['post_processing']['prediction_threshold'] else 0)
+        final_preds.append(1 if prob >= optimal_threshold else 0)
             
     y_pred_post = final_preds
 

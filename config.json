@@ -10,12 +10,20 @@
         "train_max_day": 120,
         "test_min_day": 150
     },
+    "feature_selection": {
+        "null_threshold": 0.5,
+        "variance_threshold": 0.01,
+        "corr_threshold": 0.95,
+        "top_k_features": 100
+    },
     "model_params": {
-        "n_estimators": 100,
+        "n_estimators": 500,
         "learning_rate": 0.05,
         "max_depth": 7,
+        "num_leaves": 31,
+        "min_child_samples": 50,
         "random_state": 42,
-        "is_unbalance": true
+        "scale_pos_weight": 5
     },
     "post_processing": {
         "prediction_threshold": 0.5,
