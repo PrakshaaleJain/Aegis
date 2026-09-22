@@ -25,6 +25,13 @@
         "random_state": 42,
         "scale_pos_weight": 5
     },
+    "optuna": {
+        "n_trials": 20,
+        "timeout": 1800,
+        "train_max_day": 100,
+        "val_min_day": 101,
+        "val_max_day": 120
+    },
     "post_processing": {
         "prediction_threshold": 0.5,
         "infected_card_threshold": 0.90,

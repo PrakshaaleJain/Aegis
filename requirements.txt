@@ -6,3 +6,4 @@ lightgbm
 catboost
 torch
 tensorflow
+optuna

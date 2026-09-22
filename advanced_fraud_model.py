@@ -4,7 +4,7 @@ import json
 from lightgbm import LGBMClassifier
 from sklearn.metrics import classification_report, precision_recall_curve
 from sklearn.feature_selection import VarianceThreshold
-
+import optuna
 
 def main():
     with open('config.json', 'r') as f:
@@ -132,8 +132,47 @@ def main():
     print(f"Stage D: Kept top {len(selected_features)} features globally based on importance. Dropped {len(dropped_by_importance)} features.")
     print(f"Final feature count for training: {X_train.shape[1]}")
 
-    print("Executing Step 4: Model Training (LightGBM)...")
-    model = LGBMClassifier(**config['model_params'])
+    print("Executing Step 4: Optuna Hyperparameter Tuning...")
+    optuna_train_mask = df.loc[train_idx, 'TransactionDay'] <= config['optuna']['train_max_day']
+    optuna_val_mask = (df.loc[train_idx, 'TransactionDay'] >= config['optuna']['val_min_day']) & (df.loc[train_idx, 'TransactionDay'] <= config['optuna']['val_max_day'])
+    
+    X_opt_train, y_opt_train = X_train[optuna_train_mask], y_train[optuna_train_mask]
+    X_opt_val, y_opt_val = X_train[optuna_val_mask], y_train[optuna_val_mask]
+
+    def objective(trial):
+        params = {
+            'n_estimators': trial.suggest_int('n_estimators', 100, 800),
+            'learning_rate': trial.suggest_float('learning_rate', 1e-3, 0.3, log=True),
+            'max_depth': trial.suggest_int('max_depth', 3, 12),
+            'num_leaves': trial.suggest_int('num_leaves', 20, 150),
+            'min_child_samples': trial.suggest_int('min_child_samples', 10, 100),
+            'scale_pos_weight': trial.suggest_float('scale_pos_weight', 1.0, 20.0),
+            'random_state': 42,
+            'n_jobs': -1,
+            'verbose': -1
+        }
+        model_opt = LGBMClassifier(**params)
+        model_opt.fit(X_opt_train, y_opt_train)
+        preds_proba = model_opt.predict_proba(X_opt_val)[:, 1]
+        
+        precisions, recalls, thresholds = precision_recall_curve(y_opt_val, preds_proba)
+        f1_scores = 2 * (precisions * recalls) / (precisions + recalls + 1e-9)
+        return np.max(f1_scores)
+
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+    study = optuna.create_study(direction='maximize')
+    study.optimize(objective, n_trials=config['optuna']['n_trials'], timeout=config['optuna']['timeout'])
+    
+    print(f"Best Trial F1: {study.best_value:.4f}")
+    print("Best Params:", study.best_params)
+    
+    best_params = study.best_params
+    best_params['random_state'] = 42
+    best_params['n_jobs'] = -1
+    best_params['verbose'] = -1
+    
+    print("Executing Step 5: Final Model Training (LightGBM)...")
+    model = LGBMClassifier(**best_params)
     model.fit(X_train, y_train)
 
     y_pred_proba = model.predict_proba(X_test)[:, 1]
